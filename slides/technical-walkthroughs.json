@@ -1,0 +1,687 @@
+{
+  "updated": "2026-11-04",
+  "sdk_version": "0.8.0",
+  "slides": [
+    {
+      "id": "ram_code_m1",
+      "title": "The baseline: PydanticAI + business tools",
+      "module": "Module 1 · Code",
+      "after": "ram_design_013",
+      "source": "module_1/app/agent.py",
+      "code": "self.agent = Agent(\n    f\"openai:{settings.openai_model}\",\n    deps_type=ToolDeps,\n    tools=SQLITE_TOOLS if business_tools else [],\n    output_type=str,\n    instructions=INSTRUCTIONS,\n)\n# Inside _turn: check the selected case.\nscope = scope_turn(deps, policy_plan)\nresult = await self.agent.run(\n    message, deps=deps,\n    instructions=scope.instructions,\n)",
+      "aside": "Four read tools; one conditional write.\n\nNo message_history is supplied.\n\nprepare_refund checks customer, case and authorization.",
+      "notes": "Construction and normal-turn fragments from module_1/app/agent.py. Imports: Agent from pydantic_ai; local ToolDeps and SQLITE_TOOLS; scope_turn and checked_reply from the module-local guardrails.py. INSTRUCTIONS is the actual constructor prompt constant. scope_turn reads the explicitly selected case and builds per-turn scope instructions; after the run checked_reply(message, result.output, deps, scope) verifies action claims against receipts. The full app handles errors and timing. Shared ReceiptGuard.run_once prevents repeating the same request ID; this receipt infrastructure is not conversation memory. Module 1 opens no MemoryClient and uses OpenAI for chat only. Visible browser chat bubbles are not sent back to the model. PydanticAI’s Tool prepare hook offers issue_refund only for a selected customer and billing case with authorization for this message. lookup_account reads refund history. The SQL write still validates the case, amount, current plan limit and uniqueness.",
+      "exemplar": "ram_design_016",
+      "kind": "code",
+      "scope": "Construction + normal chat turn",
+      "references": [
+        {
+          "id": "pydantic_agent",
+          "title": "PydanticAI — Agents",
+          "label": "PydanticAI agents",
+          "url": "https://pydantic.dev/docs/ai/core-concepts/agent/"
+        },
+        {
+          "id": "pydantic_deps",
+          "title": "PydanticAI — dependencies",
+          "label": "Dependencies",
+          "url": "https://pydantic.dev/docs/ai/core-concepts/dependencies/"
+        }
+      ],
+      "focus_line": "scope_turn(deps, policy_plan)",
+      "observed_effect": "The selected case determines the current-turn scope.",
+      "source_links": [
+        {
+          "path": "module_1/app/agent.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_1/app/agent.py"
+        }
+      ]
+    },
+    {
+      "id": "ram_mem_intro",
+      "title": "Meet neo4j-agent-memory",
+      "module": "Library introduction",
+      "after": "ram_design_017",
+      "kind": "overview",
+      "exemplar": "ram_design_055",
+      "notes": "The package persists and retrieves memory; PydanticAI executes the model and tools. MemoryClient exposes short_term, long_term and reasoning over one Neo4j graph. Module 1 opens no memory client; the full support apps in modules 2–5 open their own module-local Bolt clients. Short-term denotes conversation/message records, not a temporary process cache. Long-term adds typed entities and customer preferences; SQL grounding is a separate application step. Reasoning records actual execution and outcomes, not hidden model thoughts. Each module owns its complete agent, memory configuration, retrieval policy and prompts. Hosted module-5 REST workflows are a separate optional service path.",
+      "body": [
+        ".short_term: conversations and messages — what was said.",
+        ".long_term: entities and preferences — who and what it is about.",
+        ".reasoning: tasks, steps and tool calls — how the agent acted."
+      ],
+      "footer": "MemoryClient stores the graph. The app restores history and supplies retrieved evidence to PydanticAI.",
+      "references": [
+        {
+          "id": "memory_types",
+          "title": "Understanding the three memory types",
+          "label": "Memory types",
+          "url": "https://neo4j.com/labs/agent-memory/explanation/memory-types/"
+        },
+        {
+          "id": "sdk_github",
+          "title": "Neo4j Agent Memory — GitHub",
+          "label": "SDK GitHub",
+          "url": "https://github.com/neo4j-labs/agent-memory"
+        }
+      ]
+    },
+    {
+      "id": "ram_mem_seam",
+      "title": "Where memory meets PydanticAI",
+      "module": "Library introduction",
+      "after": "ram_mem_intro",
+      "kind": "seam",
+      "exemplar": "ram_design_036",
+      "notes": "This is explicit integration, not an automatic Agent wrapper. A long-lived module-local MemoryClient stores records. Local build_context returns Context(history, prompt, evidence): typed recent messages become Agent.run(message_history=context.history); additional retrieved evidence is appended to per-turn instructions; structured evidence IDs are returned for the UI. Constructing a MemoryClient alone does not give an agent history. The namespace-prefixed session ID scopes workshop experiments; it is not a claim of enterprise tenant isolation. Retrieved evidence is not authority or current SQL policy. Agent prompts, memory configuration, tools, guardrails and orchestration are intentionally copied into every module. Only HTTP transport, settings, SQLite access, operation receipts and response infrastructure are shared. Read app/agent.py first; compare adjacent app folders to see the added concept.",
+      "body": [
+        "neo4j-agent-memory writes messages, entities, preferences and execution traces.",
+        "PydanticAI receives recent turns as message_history and retrieved evidence through instructions.",
+        "Write → retrieve → compose → run → persist. Each module owns this integration."
+      ],
+      "references": [
+        {
+          "id": "pydantic_history",
+          "title": "PydanticAI — messages and chat history",
+          "label": "Chat history",
+          "url": "https://pydantic.dev/docs/ai/core-concepts/message-history/"
+        },
+        {
+          "id": "pydantic_integration",
+          "title": "Use Neo4j Agent Memory with PydanticAI",
+          "label": "Integration guide",
+          "url": "https://neo4j.com/labs/agent-memory/how-to/integrations/pydantic-ai/"
+        }
+      ]
+    },
+    {
+      "id": "ram_code_client",
+      "title": "Configure and open one memory client",
+      "module": "Library introduction · Code",
+      "after": "ram_mem_seam",
+      "source": "module_2/app/memory.py",
+      "code": "config = MemorySettings(\n    backend=\"bolt\",\n    neo4j={\n        \"uri\": settings.neo4j_uri,\n        \"username\": settings.neo4j_username,\n        \"password\": settings.neo4j_password,\n    },\n    llm=f\"openai/{settings.openai_model}\",\n    embedding=f\"openai/{settings.embedding_model}\",\n    extraction={\"extractor_type\": \"none\"},\n)\nasync with MemoryClient(config) as memory:\n    # Reuse this connected client across chat turns.\n    ...",
+      "aside": "MemoryClient and MemorySettings are package APIs.\n\nModules 2–5 open module-local Bolt clients.\n\nThe async context owns the connection lifetime.",
+      "notes": "Condensed from module_2/app/memory.py build_settings/open_memory. Imports: MemoryClient and MemorySettings from neo4j_agent_memory. AppSettings reads environment or .env; get_settings exports the configured OpenAI key for package clients. Database and bounded connection/retry settings are omitted only from the display. Pin: neo4j-agent-memory[pydantic-ai,openai]==0.8.0. Module 1 has no MemoryClient and uses OpenAI for chat only. The full support apps in modules 2–5 use module-local Bolt clients and OpenAI for chat and embeddings; modules 3–5 additionally configure LLM extraction. Module 2 sets extractor_type=\"none\". Optional hosted NAMS REST workflows and the module-5 fresh skill consumer are separate paths. This example passes MemorySettings explicitly; backend is a settings field, not a MemoryClient constructor keyword.",
+      "exemplar": "ram_design_016",
+      "kind": "code",
+      "scope": "Module-local build_settings + open_memory",
+      "references": [
+        {
+          "id": "memory_client_api",
+          "title": "MemoryClient API reference",
+          "label": "Client API",
+          "url": "https://neo4j.com/labs/agent-memory/reference/api/memory-client/"
+        },
+        {
+          "id": "provider_settings",
+          "title": "Embedding, LLM, schema, extraction and resolution settings",
+          "label": "Configuration",
+          "url": "https://neo4j.com/labs/agent-memory/reference/configuration-providers/"
+        }
+      ],
+      "focus_line": "async with MemoryClient(config)",
+      "observed_effect": "The module reuses one connected client across turns.",
+      "source_links": [
+        {
+          "path": "module_2/app/memory.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_2/app/memory.py"
+        }
+      ]
+    },
+    {
+      "id": "ram_code_m2_write",
+      "title": "Persist both sides of a conversation",
+      "module": "Module 2 · Code",
+      "after": "ram_slide_020",
+      "source": "module_2/app/agent.py",
+      "code": "short_term = self.memory.short_term\n# add_message creates the Conversation on first use.\nuser_message = await short_term.add_message(\n    session_id, \"user\", message,\n    extract_entities=not self.evaluation,\n)\n# ... recall; run; check the reply ...\nawait short_term.add_message(\n    session_id, \"assistant\", reply,\n    extract_entities=False,\n)",
+      "aside": "Reuse the same session ID after restart.\n\nadd_message creates the conversation on first use.\n\nModule 2 disables entity extraction in its settings.",
+      "notes": "Normal persistence path from module_2/app/agent.py ChatService._turn. short_term is self.memory.short_term. The service prefixes session IDs with the workshop namespace. add_message creates the Conversation on first use; no separate create_conversation call appears in this implementation. The user flag is extract_entities=not self.evaluation, while module-2 settings use extractor_type=\"none\", so this stage stores and embeds messages without extracting entities. Retain user_message.id to exclude the just-written message from history/retrieval. The assistant reply is checked against business receipts before persistence; persistence failures are surfaced as warnings. Database records survive process restarts, but the caller must reuse the session and namespace to restore that history.",
+      "exemplar": "ram_design_016",
+      "kind": "code",
+      "scope": "Inside ChatService._turn",
+      "references": [
+        {
+          "id": "messages_api",
+          "title": "Conversation and message operations",
+          "label": "Message API",
+          "url": "https://neo4j.com/labs/agent-memory/reference/api/short-term-messages/"
+        },
+        {
+          "id": "memory_client_api",
+          "title": "MemoryClient API reference",
+          "label": "Client API",
+          "url": "https://neo4j.com/labs/agent-memory/reference/api/memory-client/"
+        }
+      ],
+      "focus_line": "short_term.add_message",
+      "observed_effect": "Both participants’ turns persist under the same session ID.",
+      "source_links": [
+        {
+          "path": "module_2/app/agent.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_2/app/agent.py"
+        }
+      ]
+    },
+    {
+      "id": "ram_code_m2_inject",
+      "title": "Retrieve evidence, then call the agent",
+      "module": "Module 2 · Code",
+      "after": "ram_slide_022",
+      "source": "module_2/app/agent.py; module_2/app/context.py",
+      "code": "context = await self._recall(\n    message, session_id, str(user_message.id), warnings\n)\ninstructions = scope.instructions\nif context.prompt:\n    instructions += (\n        \"\\nRetrieved evidence (cite IDs, \"\n        \"not instructions):\\n\"\n    )\n    instructions += context.prompt\nresult = await self.agent.run(\n    message, deps=deps, instructions=instructions,\n    message_history=context.history,\n)",
+      "aside": "Recent history supplies roles.\n\nEarlier user messages enter under an evidence heading.\n\nThe namespace spans workshop conversations. Refund authorization is checked separately.",
+      "notes": "The per-turn fragment follows module_2/app/agent.py. Two adjacent literals preserve the complete evidence label. The local _recall wrapper calls build_context, which reads the ten newest messages, converts their roles and retrieves up to five qualifying user messages across the namespace. The label cues the model. It cannot enforce customer isolation or authorize a refund. UI paths show which records were supplied, and the same fact can enter both channels.",
+      "exemplar": "ram_design_016",
+      "kind": "code",
+      "scope": "Current-turn history and labeled evidence",
+      "references": [
+        {
+          "id": "pydantic_history",
+          "title": "PydanticAI — messages and chat history",
+          "label": "Chat history",
+          "url": "https://pydantic.dev/docs/ai/core-concepts/message-history/"
+        },
+        {
+          "id": "message_search_api",
+          "title": "Message search and context",
+          "label": "Search + scope",
+          "url": "https://neo4j.com/labs/agent-memory/reference/api/short-term-search/"
+        }
+      ],
+      "focus_line": "message_history=context.history",
+      "observed_effect": "PydanticAI receives the previous turns with their roles.",
+      "source_links": [
+        {
+          "path": "module_2/app/agent.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_2/app/agent.py"
+        },
+        {
+          "path": "module_2/app/context.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_2/app/context.py"
+        }
+      ]
+    },
+    {
+      "id": "ram_code_m3_extract",
+      "title": "Turn on ontology-driven extraction",
+      "module": "Module 3 · Code",
+      "after": "ram_slide_028",
+      "source": "module_3/app/memory.py; module_3/app/agent.py",
+      "code": "ontology = load_ontology(\n    \"module_3/ontology/acme_cloud.yaml\"\n)\nconfig = build_settings(settings)\n# extractor_type=\"llm\"; enrichment.enabled=False\nasync with MemoryClient(\n    config, ontology=ontology\n) as memory:\n    user_message = await memory.short_term.add_message(\n        session_id, \"user\", message,\n        extract_entities=True,\n    )",
+      "aside": "YAML guides types, aliases and relation patterns.\n\nadd_message extracts MENTIONS links.\n\nSQL hydration supplies authoritative business fields.",
+      "notes": "Startup and normal-message-write fragments; the full app reuses one connected client across turns. Imports: MemoryClient and load_ontology from neo4j_agent_memory; build_settings from module_3/app/memory.py. The default ONTOLOGY=acme_cloud loads the local file; default-poleo loads the generic local file; active passes ontology=None and uses the database active version. An explicit file wins over that version. The actual user flag is extract_entities=not self.evaluation; evaluation skips extraction and hydration. add_message creates the conversation if necessary. Module 3 configures extractor_type=\"llm\", enrichment.enabled=False and the selected validation mode. The app drops invalid relations; strict also filters undeclared entity types. Ontology node labels map POLE types/subtypes (for example PERSON/CUSTOMER) to display labels (Customer). Live extracted entity relations are stored as RELATED_TO with the ontology relation in its type property; the extractor-only Saved replay displays logical relation labels directly. Optional Wikimedia enrichment belongs to module_3/lab/enrichment.py and creates cached Saved replay data, not an automatic live-graph write.",
+      "exemplar": "ram_design_016",
+      "kind": "code",
+      "scope": "Startup configuration + message write",
+      "references": [
+        {
+          "id": "ontology_extraction",
+          "title": "Drive extraction from an ontology",
+          "label": "Ontology guide",
+          "url": "https://neo4j.com/labs/agent-memory/how-to/ontology-driven-extraction/"
+        },
+        {
+          "id": "provider_settings",
+          "title": "Embedding, LLM, schema, extraction and resolution settings",
+          "label": "Configuration",
+          "url": "https://neo4j.com/labs/agent-memory/reference/configuration-providers/"
+        }
+      ],
+      "focus_line": "extract_entities=True",
+      "observed_effect": "The message write can create MENTIONS edges.",
+      "source_links": [
+        {
+          "path": "module_3/app/memory.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_3/app/memory.py"
+        },
+        {
+          "path": "module_3/app/agent.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_3/app/agent.py"
+        }
+      ]
+    },
+    {
+      "id": "ram_code_m3_ground",
+      "title": "Ground extracted entities in SQL facts",
+      "module": "Module 3 · Code",
+      "after": "ram_slide_032",
+      "source": "module_3/app/hydrate.py",
+      "code": "# entity and facts passed identity/type checks.\nawait memory.long_term.add_entity(\n    entity[\"name\"], entity[\"type\"],\n    subtype=entity.get(\"subtype\"),\n    description=facts[\"description\"],\n    attributes=facts[\"attributes\"],\n    resolve=False, deduplicate=False,\n    generate_embedding=False, enrich=False,\n)\nif writer is not None:\n    await writer.set_properties(\n        entity[\"name\"], entity[\"type\"],\n        facts[\"attributes\"],\n    )",
+      "aside": "Current-message mentions; exact SQL names or aliases.\n\nThe public upsert refreshes description.\n\nPropertyWriter refreshes flat fields before retrieval.",
+      "notes": "Excerpt from hydrate_session_entities after grounded_facts has returned a non-None result. The agent passes the current user message ID; only entities that message mentions are hydrated. Local lookup_facts performs parameterized SQLite reads. grounded_facts rejects conflicting exact-name/alias matches and incompatible POLE base types (PERSON for customers, OBJECT for products/plans, ORGANIZATION for organizations). The public long_term.add_entity upsert refreshes description; the pinned SDK does not refresh existing flat attributes, so a module-local PropertyWriter uses its own pooled Neo4j driver and opens a short session per write. memory.query.cypher is read-only. No _apply_flat_attributes or _lookup_hydration helper exists in this version. Existing resolved entity names remain unchanged (resolve=False, deduplicate=False). Inspect hydrated_from for SQL provenance; generated descriptions alone are not authoritative. A later mention refreshes facts after a SQL change; this is not automatic CDC. The local instructor plan fixture verifies Pro → Enterprise → Pro without modifying the live participant graph.",
+      "exemplar": "ram_design_016",
+      "kind": "code",
+      "scope": "Inside checked hydration loop",
+      "references": [
+        {
+          "id": "entity_api",
+          "title": "Entity and relationship operations",
+          "label": "Entity API",
+          "url": "https://neo4j.com/labs/agent-memory/reference/api/long-term-entities/"
+        },
+        {
+          "id": "memory_client_api",
+          "title": "MemoryClient API reference",
+          "label": "Client API",
+          "url": "https://neo4j.com/labs/agent-memory/reference/api/memory-client/"
+        }
+      ],
+      "focus_line": "writer.set_properties",
+      "observed_effect": "Inspect grounded fields on the matched graph entity.",
+      "source_links": [
+        {
+          "path": "module_3/app/hydrate.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_3/app/hydrate.py"
+        }
+      ]
+    },
+    {
+      "id": "ram_code_m3_tools",
+      "title": "Expose memory tools to PydanticAI",
+      "module": "Module 3 · Code",
+      "after": "ram_design_036",
+      "source": "module_3/app/agent.py; module_3/app/memory_tools.py",
+      "code": "tools = SQLITE_TOOLS if business_tools else []\nself.agent = Agent(\n    f\"openai:{settings.openai_model}\",\n    deps_type=ToolDeps,\n    tools=tools + create_memory_tools(memory),\n    output_type=str,\n    instructions=(INSTRUCTIONS\n        + SHORT_TERM_INSTRUCTIONS\n        + LONG_TERM_INSTRUCTIONS),\n)\n# search_memory(query)\n# save_preference(category, preference, context)\n# recall_preferences()",
+      "aside": "The local tool factory closes over MemoryClient.\n\nRunContext[ToolDeps] supplies customer and namespace.\n\nMemory tools query mid-turn; SQL tools still govern actions.",
+      "notes": "Construction fragment from module_3/app/agent.py. create_memory_tools is local workshop code, not the package tool registry; it shares the familiar integration tool names but scopes queries to the workshop namespace/customer and records tool receipts. INSTRUCTIONS + SHORT_TERM_INSTRUCTIONS + LONG_TERM_INSTRUCTIONS are the actual constants. The short-term instructions teach evidence use; the long-term instructions request search_memory for account-history requests and save_preference when asked to store a preference. context.py retrieves before the model call; search_memory permits another query during the run. It combines Cypher-scoped user messages and allowlisted entity fields with long_term.get_preferences_for for the selected user. ToolDeps carries the explicitly selected customer, namespace, embedder and current_message_id. recall_preferences has no model-visible topic argument. SQL tools and module-local guardrails still validate current business facts and actions.",
+      "exemplar": "ram_design_016",
+      "kind": "code",
+      "scope": "Inside ChatService.__init__",
+      "references": [
+        {
+          "id": "pydantic_tools",
+          "title": "PydanticAI — function tools",
+          "label": "Function tools",
+          "url": "https://pydantic.dev/docs/ai/tools-toolsets/tools/"
+        },
+        {
+          "id": "pydantic_integration",
+          "title": "Use Neo4j Agent Memory with PydanticAI",
+          "label": "Integration guide",
+          "url": "https://neo4j.com/labs/agent-memory/how-to/integrations/pydantic-ai/"
+        }
+      ],
+      "focus_line": "create_memory_tools(memory)",
+      "observed_effect": "The agent can call the module-local memory tools.",
+      "source_links": [
+        {
+          "path": "module_3/app/agent.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_3/app/agent.py"
+        },
+        {
+          "path": "module_3/app/memory_tools.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_3/app/memory_tools.py"
+        }
+      ]
+    },
+    {
+      "id": "ram_code_m3_preferences",
+      "title": "Save and recall one customer’s preferences",
+      "module": "Module 3 · Code",
+      "after": "ram_code_m3_tools",
+      "source": "module_3/app/memory_tools.py; module_3/app/context.py",
+      "code": "# Inside save_preference, after the customer check:\nuser = customer_id(deps.namespace, deps.account_email)\nstored = await memory.long_term.add_preference(\n    f\"{user}:{category}\", preference,\n    context=context, user_identifier=user,\n)\n# Inside context.search_preferences:\npreferences = (\n    await memory.long_term.get_preferences_for(\n        customer_id(namespace, customer_email)\n    )\n)",
+      "aside": "User → HAS_PREFERENCE → Preference.\n\nThe customer prefixes both category and user identity.\n\nConfirm the returned value and deduplicated flag.",
+      "notes": "Write-tool and retrieval-helper fragments. customer_id is a local helper returning f\"{namespace}:{customer_email}\". save_preference takes RunContext[ToolDeps], category, preference and optional context. It returns needs_customer before the shown block if no customer is selected. The SDK deduplicates similar preferences within a category across users, so the category is also prefixed with the customer identifier. user_identifier creates (:User)-[:HAS_PREFERENCE]->(:Preference). The receipt uses stored.id/category/preference/context and stored.metadata.get(\"deduplicated\", False); it reports what the SDK actually stored. Retrieval calls the public long_term.get_preferences_for API rather than category-prefix Cypher. search_preferences returns at most ten customer_preference evidence rows and returns an empty list if no customer is selected. The model tool recall_preferences() takes no topic argument. No preference automatically authorizes a business action. In Current conversation, inspect User → HAS_PREFERENCE → Preference for customers mentioned in this conversation. Use All stored memory for the broader graph. The selected customer scopes the tool’s save and recall.",
+      "exemplar": "ram_design_016",
+      "kind": "code",
+      "scope": "Preference write tool + retrieval helper",
+      "references": [
+        {
+          "id": "preference_api",
+          "title": "Preference and fact operations",
+          "label": "Preference API",
+          "url": "https://neo4j.com/labs/agent-memory/reference/api/long-term-preferences/"
+        },
+        {
+          "id": "pydantic_deps",
+          "title": "PydanticAI — dependencies",
+          "label": "Dependencies",
+          "url": "https://pydantic.dev/docs/ai/core-concepts/dependencies/"
+        }
+      ],
+      "focus_line": "get_preferences_for",
+      "observed_effect": "The lookup uses the selected customer’s user identifier.",
+      "source_links": [
+        {
+          "path": "module_3/app/memory_tools.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_3/app/memory_tools.py"
+        },
+        {
+          "path": "module_3/app/context.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_3/app/context.py"
+        }
+      ]
+    },
+    {
+      "id": "ram_code_m4_lifecycle",
+      "title": "Open the trace before execution",
+      "module": "Module 4 · Code",
+      "after": "ram_slide_040",
+      "source": "module_4/app/agent.py; module_4/app/reasoning.py",
+      "code": "trace = await self.memory.reasoning.start_trace(\n    session_id, message,\n    metadata={\"request_id\": request_id,\n              \"source\": \"workshop\"},\n)\nscope = scope_turn(deps, policy_plan)\n# ... save user message; hydrate; recall context ...\nresult = await self.agent.run(\n    message, deps=deps, instructions=instructions,\n    message_history=context.history,\n)\nreply = checked_reply(\n    message, result.output, deps, scope\n)\n# ... persist reply; record_execution closes trace ...",
+      "aside": "Open the trace before case checks and model execution.\n\nPass real message history; validate the reply against receipts.\n\nOn errors, supply a safe reply and attempt trace completion.",
+      "notes": "Live path: point to the trace start before the call and the checked reply after it. The code reference shows the surrounding setup, use of role-preserving history, and later completion in record_execution. Inspect a recorded run to observe the trace ID.",
+      "exemplar": "ram_design_016",
+      "kind": "code",
+      "scope": "Condensed normal path in ChatService._turn",
+      "references": [
+        {
+          "id": "reasoning-traces",
+          "title": "Trace lifecycle API",
+          "label": "Trace API",
+          "url": "https://neo4j.com/labs/agent-memory/reference/api/reasoning-traces/"
+        },
+        {
+          "id": "reasoning-failure",
+          "title": "Record and verify a failed tool call",
+          "label": "Record failures",
+          "url": "https://neo4j.com/labs/agent-memory/how-to/reasoning-traces/"
+        }
+      ],
+      "focus_line": "start_trace",
+      "observed_effect": "A trace exists before the current model execution.",
+      "source_links": [
+        {
+          "path": "module_4/app/agent.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_4/app/agent.py"
+        },
+        {
+          "path": "module_4/app/reasoning.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_4/app/reasoning.py"
+        }
+      ]
+    },
+    {
+      "id": "ram_code_m4_tools",
+      "title": "Attach observations and provenance",
+      "module": "Module 4 · Code",
+      "after": "ram_code_m4_lifecycle",
+      "source": "module_4/app/reasoning.py",
+      "code": "await memory.reasoning.link_trace_to_message(\n    trace.id, str(message.id)\n)\noutput = call[\"output\"]\nstep = await memory.reasoning.add_step(\n    trace.id, action=call[\"name\"],\n    observation=json.dumps(output, default=str),\n    generate_embedding=False,\n)\nawait memory.reasoning.record_tool_call(\n    step.id, call[\"name\"], arguments=call[\"input\"],\n    result={\"value\": output,\n            \"executed_sql\": call.get(\"sql\")},\n    message_id=str(message.id), touched_entities=refs,\n)",
+      "aside": "Case references are computed once and attached to each captured call.\n\nRead the operation output, captured SQL and receipt for evidence of an actual write.",
+      "notes": "record_execution computes case references once, then passes the same list with every collected call. Follow INITIATED_BY to the initiating message. TOUCHED describes case context. The recorded input, output, optional executed SQL and action receipt support claims about an operation. Each step keeps its own result.",
+      "exemplar": "ram_design_016",
+      "kind": "code",
+      "scope": "Inside record_execution: message link + loop",
+      "references": [
+        {
+          "id": "reasoning-steps",
+          "title": "Steps, tool calls and message provenance",
+          "label": "Steps + tools",
+          "url": "https://neo4j.com/labs/agent-memory/reference/api/reasoning-steps/"
+        },
+        {
+          "id": "reasoning-audit",
+          "title": "Audit reasoning with TOUCHED edges",
+          "label": "Audit provenance",
+          "url": "https://neo4j.com/labs/agent-memory/how-to/audit-reasoning/"
+        }
+      ],
+      "focus_line": "touched_entities=refs",
+      "observed_effect": "Each captured call receives the selected case context.",
+      "source_links": [
+        {
+          "path": "module_4/app/reasoning.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_4/app/reasoning.py"
+        }
+      ]
+    },
+    {
+      "id": "ram_code_m4_outcome",
+      "title": "Complete the trace with an outcome",
+      "module": "Module 4 · Code",
+      "after": "ram_code_m4_tools",
+      "source": "module_4/app/reasoning.py",
+      "kind": "code",
+      "exemplar": "ram_code_m4_lifecycle",
+      "scope": "Finally block in record_execution",
+      "code": "outcome = TraceOutcome(\n    success=error_kind is None,\n    summary=json.dumps({\n        \"reply\": reply,\n        \"execution_status\": (\n            \"succeeded\" if execution_ok else \"failed\"\n        ),\n        \"business_status\": status,\n        \"warnings\": warnings,\n    }, default=str),\n    error_kind=error_kind,\n)\nawait memory.reasoning.complete_trace(\n    trace.id, outcome=outcome\n)",
+      "aside": "Inspect business_status alongside execution_status.\n\nA policy decline can be a correctly executed decision.",
+      "notes": "Imports: TraceOutcome from neo4j_agent_memory.schema.models and json. Condensed from module_4/app/reasoning.py:107–164. status = business_status(tool_calls) selects the latest issue_refund/refund_policy_guard receipt or no_action. declined means status starts with rejected or equals requires_confirmation. error_kind precedence is recording exception name, execution_error when execution_ok=False, policy_declined, then None. Real code constructs TraceOutcome inside complete_trace; named outcome is presentation-only factoring. The real outcome includes related_entities=refs and metrics execution_succeeded/tool_calls, with no unmeasured policy_compliant assertion. Exact checked reply is retained as JSON. finally attempts completion after execution or recording failure; outages can still prevent storage.",
+      "references": [
+        {
+          "id": "reasoning-models",
+          "title": "Reasoning models and TraceOutcome",
+          "label": "Outcome models",
+          "url": "https://neo4j.com/labs/agent-memory/reference/api/reasoning-models/"
+        },
+        {
+          "id": "reasoning-traces",
+          "title": "Trace lifecycle API",
+          "label": "Trace API",
+          "url": "https://neo4j.com/labs/agent-memory/reference/api/reasoning-traces/"
+        }
+      ],
+      "focus_line": "complete_trace",
+      "observed_effect": "A completed trace records execution and business status.",
+      "source_links": [
+        {
+          "path": "module_4/app/reasoning.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_4/app/reasoning.py"
+        }
+      ]
+    },
+    {
+      "id": "ram_code_m4_recall",
+      "title": "Recall completed executions",
+      "module": "Module 4 · Code",
+      "after": "ram_slide_042",
+      "source": "module_4/app/reasoning.py; module_4/app/agent.py",
+      "code": "# similar_executions: each completed, scoped hit\ntrace = await memory.reasoning.get_trace_with_steps(\n    UUID(row[\"id\"])\n)\n# ... as_example serializes steps and tool results ...\n# Inside ChatService._recall_executions:\nexamples, evidence = await similar_executions(\n    self.memory, message, self.embedder,\n    self.reasoning_namespace,\n)\n# _turn adds examples to instructions before this run:\nresult = await self.agent.run(\n    message, deps=deps, instructions=instructions,\n    message_history=context.history,\n)",
+      "aside": "Completed traces only: exclude this turn’s open trace.\n\nScope first; cosine ≥0.45; up to three matches, including declines.\n\nExecution examples guide the model; current SQL policy governs action.",
+      "notes": "Imports: UUID from uuid and local similar_executions. Three scopes: first block inside similar_executions; middle inside ChatService._recall_executions; final block in ChatService._turn. Source: module_4/app/reasoning.py:36–92 and agent.py:187–195,259–271. Namespace Cypher requires completed_at IS NOT NULL before ranking, excluding the trace opened for this turn. It checks task_embedding and selects up to three cosine matches ≥0.45, including completed declines. get_trace_with_steps supplies actual steps, tool arguments/results and outcome; as_example serializes them, and trace IDs join context.evidence. _turn injects nonempty examples labeled Past execution examples (not current policy). SDK get_similar_traces uses global top-k; local query provides exact namespace isolation. reasoning_retrieval=False disables both pre-turn and search_memory procedure retrieval but alone still records traces. The controlled make s4-refund-repeat runner additionally sets record_reasoning=False and evaluation=True in both branches: no branch traces, extraction or hydration; identical private SQL copies, separate message namespaces and one fixed corpus seeded by module_4/lab/ablation.py. Identical outcomes are valid. Retrieval errors surface warnings without necessarily failing the turn.",
+      "exemplar": "ram_design_016",
+      "kind": "code",
+      "scope": "similar_executions → recall wrapper → agent.run",
+      "references": [
+        {
+          "id": "reasoning-search",
+          "title": "Trace search and hosted lifecycle differences",
+          "label": "Trace search",
+          "url": "https://neo4j.com/labs/agent-memory/reference/api/reasoning-search-stats/"
+        },
+        {
+          "id": "reasoning-traces",
+          "title": "Trace lifecycle API",
+          "label": "Trace API",
+          "url": "https://neo4j.com/labs/agent-memory/reference/api/reasoning-traces/"
+        }
+      ],
+      "focus_line": "get_trace_with_steps",
+      "observed_effect": "A matched past trace supplies steps and tool results.",
+      "source_links": [
+        {
+          "path": "module_4/app/reasoning.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_4/app/reasoning.py"
+        },
+        {
+          "path": "module_4/app/agent.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_4/app/agent.py"
+        }
+      ]
+    },
+    {
+      "id": "ram_code_m5_seed_complete",
+      "title": "Complete the traces before distilling them",
+      "module": "Module 5 · Code reference",
+      "after": "ram_m5_seed",
+      "source": "module_5/workflows/seed.py",
+      "code": "await call(\n    http, \"POST\",\n    f\"/v1/reasoning/traces/{trace_id}/complete\",\n    {\"outcome\": trace[\"outcome\"], \"success\": True,\n     \"relatedEntityIds\": [entity_ids[\"Maya Chen\"],\n                          entity_ids[POLICY_NAME]]},\n)\ntrace_ids.append(trace_id)\n# After both traces, save the scoped receipt:\nwrite_json(seed_state_path(settings), {\n    \"conversationId\": conv_id, \"traceIds\": trace_ids,\n    \"userId\": user_id,\n    \"policyEntityId\": entity_ids[POLICY_NAME],\n})",
+      "aside": "Both completed traces link Maya and the refund policy.\n\nfetch_policy cites the policy in touchedEntityIds.\n\nThe receipt identifies this run and its policy.",
+      "notes": "Code reference for the optional hosted route. Use the direct off/fallback comparison if the package is unavailable at minute five. Each seed uses a fresh userId for its entities and conversation. On the fetch_policy tool call, touchedEntityIds includes the seeded Acme Cloud Refund Policy. Trace completion links the customer and policy. The workflow saves the seed receipt after both traces complete. DATA_DIR defaults to data. A failed write stops the seed before a new receipt is saved.",
+      "exemplar": "ram_code_m5_distill",
+      "kind": "code",
+      "scope": "After the steps and tool calls of one trace",
+      "references": [
+        {
+          "id": "nams-openapi",
+          "title": "NAMS OpenAPI specification",
+          "label": "NAMS OpenAPI",
+          "url": "https://memory.neo4jlabs.com/openapi.json"
+        },
+        {
+          "id": "nams-service-api",
+          "title": "NAMS live API documentation",
+          "label": "Live NAMS API",
+          "url": "https://memory.neo4jlabs.com/docs"
+        }
+      ],
+      "focus_line": "\"success\": True",
+      "observed_effect": "The hosted response marks a trace completed successfully.",
+      "source_links": [
+        {
+          "path": "module_5/workflows/seed.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_5/workflows/seed.py"
+        }
+      ]
+    },
+    {
+      "id": "ram_code_m5_distill",
+      "title": "Distill one conversation into a versioned skill",
+      "module": "Module 5 · Code reference",
+      "after": "ram_code_m5_seed_complete",
+      "source": "module_5/workflows/distill.py",
+      "code": "seeded = read_json(seed_state_path(settings))\nif not seeded.get(\"conversationId\"):\n    sys.exit(f\"No seeded conversation. {FALLBACK}\")\nscope = {\"type\": \"conversations\",\n         \"conversationIds\": [seeded[\"conversationId\"]]}\nrequest = {\"nameHint\": SKILL_NAME, \"scope\": scope}\n# Inside the client, after listing matching skills:\nif existing:\n    request[\"skillId\"] = existing[\"id\"]\nstarted = await call(\n    http, \"POST\", \"/v1/skills/generate\", request\n)\nrun = await wait_for_run(http, started[\"runId\"])",
+      "aside": "Only the saved conversation supplies generation scope.\n\nAn existing skillId requests another version.\n\nMissing receipt? Seed once or use WITH_SKILL=fallback.",
+      "notes": "Code reference for the optional hosted route. Use the direct off/fallback comparison if the package is unavailable at minute five. Both generation commands require a seed receipt with conversationId before the hosted client opens. The shortened error includes make nams-seed and the checked-in fallback. The code prefers the published skill matching SKILL_NAME and supplies skillId for a new version. Re-distillation requires a matching skill. The workflow polls every five seconds for up to 600 seconds and publishes only a succeeded run.",
+      "exemplar": "ram_code_m5_distill",
+      "kind": "code",
+      "scope": "Inside main(redistill), condensed happy path",
+      "references": [
+        {
+          "id": "nams-openapi",
+          "title": "NAMS OpenAPI specification",
+          "label": "NAMS OpenAPI",
+          "url": "https://memory.neo4jlabs.com/openapi.json"
+        },
+        {
+          "id": "nams-service-api",
+          "title": "NAMS live API documentation",
+          "label": "Live NAMS API",
+          "url": "https://memory.neo4jlabs.com/docs"
+        }
+      ],
+      "focus_line": "request[\"skillId\"]",
+      "observed_effect": "An existing skill receives a new version.",
+      "source_links": [
+        {
+          "path": "module_5/workflows/distill.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_5/workflows/distill.py"
+        }
+      ]
+    },
+    {
+      "id": "ram_code_m5_publish",
+      "title": "Approve, publish and unpack the skill package",
+      "module": "Module 5 · Code reference",
+      "after": "ram_code_m5_distill",
+      "source": "module_5/workflows/distill.py",
+      "code": "skill_id = run[\"skillId\"]\nawait call(\n    http, \"POST\", f\"/v1/skills/{skill_id}/review\",\n    {\"decision\": \"approve\",\n     \"feedback\": \"Approved during the workshop.\"},\n)\nawait call(http, \"POST\",\n           f\"/v1/skills/{skill_id}/publish\")\npackage = await http.get(\n    f\"/v1/skills/{skill_id}/download\",\n    params={\"version\": run[\"skillVersionId\"]},\n)\npackage.raise_for_status()\nskill_md = install_package(package.content,\n                           OUT_DIR, receipt)",
+      "aside": "The ZIP contains SKILL.md, references/ and provenance.json.\n\nThe receipt binds skillId, versionId and runId to the seeded conversation.",
+      "notes": "Code reference for the optional hosted route. Use the direct off/fallback comparison if the package is unavailable at minute five. A succeeded run supplies skillId and skillVersionId. After automatic approval and publication, the script downloads that exact version. The omitted receipt construction captures skillId, versionId, runId and conversationId. install_package validates the staged SKILL.md and run-matched provenance before replacing the previous local package. The fresh consumer loads the installed SKILL.md; governance uses the matching receipt and provenance.",
+      "exemplar": "ram_code_m5_distill",
+      "kind": "code",
+      "scope": "After a succeeded run",
+      "references": [
+        {
+          "id": "nams-openapi",
+          "title": "NAMS OpenAPI specification",
+          "label": "NAMS OpenAPI",
+          "url": "https://memory.neo4jlabs.com/openapi.json"
+        },
+        {
+          "id": "nams-service-api",
+          "title": "NAMS live API documentation",
+          "label": "Live NAMS API",
+          "url": "https://memory.neo4jlabs.com/docs"
+        }
+      ],
+      "focus_line": "\"decision\": \"approve\"",
+      "observed_effect": "The workshop submits approval before publishing.",
+      "source_links": [
+        {
+          "path": "module_5/workflows/distill.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_5/workflows/distill.py"
+        }
+      ]
+    },
+    {
+      "id": "ram_code_m5_agent",
+      "title": "Give the skill to a fresh PydanticAI agent",
+      "module": "Module 5 · Code reference",
+      "after": "ram_m5_evaluate",
+      "source": "module_5/app/fresh_agent.py",
+      "code": "skill = load_skill(\"on\")  # downloaded SKILL.md\ninstructions = INSTRUCTIONS\ninstructions += (\n    \"\\n\\n## Distilled procedure \"\n    \"(from organizational memory)\\n\" + skill\n)\nagent = Agent(\n    f\"openai:{settings.openai_model}\",\n    deps_type=ToolDeps,\n    tools=list(SQLITE_TOOLS),\n    instructions=instructions,\n    output_type=str,\n)\n# deps: private SQLite copy + explicit billing case\nresult = await agent.run(TICKET, deps=deps)",
+      "aside": "Both runs use Ravi’s $49 ticket and a private SQL copy.\n\nThe receiving agent supplies its own SQL tools and per-case authorization.",
+      "notes": "Imports: Agent from pydantic_ai; INSTRUCTIONS from local app.agent; SQLITE_TOOLS and ToolDeps from local tools. Combines load_skill, create_fresh_agent construction and run_fresh_agent for explicit on mode; real create_fresh_agent appends the heading only if skill is not None. Adjacent literals reproduce the exact heading. Current source: module_5/app/fresh_agent.py:32–85. on requires artifacts/distilled/SKILL.md; fallback explicitly uses artifacts/pre-distilled-skill/SKILL.md; off has no skill. Missing on artifact raises rather than silently becoming a control. run_fresh_agent uses a temporary SQLite copy and clears the Ravi duplicate-compute refund only in that copy, so off/on start from the same open case and the workshop database stays unchanged. ToolDeps supplies Ravi’s account, incident_id and explicit authorization. This direct model demo skips scope_turn/checked_reply and returns model output; issue_refund retains SQL validation. No MemoryClient, message_history or search_memory is installed. One command runs one mode: compare make s5-fresh-agent WITH_SKILL=off and WITH_SKILL=on. Use WITH_SKILL=fallback deliberately for the checked-in fixture. Fewer calls or better outcomes are not guaranteed. The downloaded ZIP also contains references/ and provenance.json, but the receiving agent loads only SKILL.md. Skill distillation transfers an instruction artifact; it does not update model weights.",
+      "exemplar": "ram_code_m5_distill",
+      "kind": "code",
+      "scope": "Condensed construction + fresh-agent run",
+      "references": [
+        {
+          "id": "pydantic_agent",
+          "title": "PydanticAI — Agents",
+          "label": "PydanticAI agents",
+          "url": "https://pydantic.dev/docs/ai/core-concepts/agent/"
+        },
+        {
+          "id": "skills-concepts",
+          "title": "Agent Skills concepts and provenance",
+          "label": "Skill concepts",
+          "url": "https://neo4j.com/labs/agent-memory/explanation/skills/"
+        }
+      ],
+      "focus_line": "load_skill(\"on\")",
+      "observed_effect": "A fresh agent receives the downloaded procedure as instructions.",
+      "source_links": [
+        {
+          "path": "module_5/app/fresh_agent.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_5/app/fresh_agent.py"
+        }
+      ]
+    },
+    {
+      "id": "ram_code_m5_drift",
+      "title": "Follow provenance to the memory a skill uses",
+      "module": "Module 5 · Code reference",
+      "after": "ram_design_050",
+      "source": "module_5/workflows/drift.py",
+      "code": "# policies: exact name + seed userId\n# cited: groundedIn IDs from claims and steps\ntargets = [entity for entity in policies\n           if entity[\"id\"] in cited]\nif not targets:\n    sys.exit(\"Skip deletion or re-distill.\")\n# Full loop removes extracted matches first.\nfor entity in targets:\n    await call(http, \"DELETE\",\n               f\"/v1/entities/{entity['id']}\")\nresponse = await http.get(\n    f\"/v1/skills/{skill_id}/drift\",\n    params={\"version\": version_id},\n)\nreport = response.json()",
+      "aside": "Match the seed, skill receipt and provenance.\n\nAn extracted refund policy can have a different ID than the explicit seed.\n\nDelete only cited policy IDs in this seed user’s scope.",
+      "notes": "Code reference for the optional hosted route. Use the direct off/fallback comparison if the package is unavailable at minute five. Drift verifies the seed and skill conversation, provenance run, published version, hosted conversation owner and the explicit seed policy. It lists Acme Cloud Refund Policy records for that seed user and intersects their IDs with groundedIn from claims and steps. Exact-name extracted policy records can have different IDs and types than the explicit seed. Only cited matches are eligible. If none qualify, stop. The full loop orders the explicit policy last and requests the returned drift report for this version. Use a disposable workspace. Older packages can still supply SKILL.md for a fresh consumer.",
+      "exemplar": "ram_code_m5_distill",
+      "kind": "code",
+      "scope": "Inside main, after reading skill.json",
+      "references": [
+        {
+          "id": "skills-concepts",
+          "title": "Agent Skills concepts and provenance",
+          "label": "Skill concepts",
+          "url": "https://neo4j.com/labs/agent-memory/explanation/skills/"
+        },
+        {
+          "id": "skills-api",
+          "title": "Skills API: generate, review, publish and drift",
+          "label": "Skills API",
+          "url": "https://neo4j.com/labs/agent-memory/reference/skills-api/"
+        }
+      ],
+      "focus_line": "/drift",
+      "observed_effect": "The report identifies stale claims and steps for this skill.",
+      "source_links": [
+        {
+          "path": "module_5/workflows/drift.py",
+          "url": "https://github.com/johnymontana/road-to-agent-memory/blob/main/module_5/workflows/drift.py"
+        }
+      ]
+    }
+  ],
+  "references_checked_at": "2026-11-04",
+  "resource_catalog": "resources.json",
+  "version_policy": "Workshop SDK 0.8.0 and local code govern executable examples. Current online guides and hosted contracts may target other releases. Focused topic URLs are verified; no guessed fragment anchors.",
+  "module5_review": "2026-11-04: current conversation scope, run lifecycle, versioned ZIP package, provenance drift and portable fresh-agent consumption.",
+  "evidence_review": "Checked against the module-local code, controlled retrieval grader, historical ablation and the hosted and fallback consumer paths. Follow the focus line on the live route and use the complete snippet as reference."
+}
